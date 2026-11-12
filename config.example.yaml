@@ -1,0 +1,38 @@
+# llmwatch — tiny LLM monitoring stack.
+# Copy to config.yaml and edit. Secrets (API keys) are NOT read from this file:
+# they come from environment variables named by `*_env` fields.
+
+listen: 0.0.0.0:8799          # dashboard + /metrics served here
+scrape_interval: 15s          # poll cadence for every target
+retention: 24h                # how far back the in-memory ring keeps samples
+ssh_key: ~/.ssh/lenosparky    # default key for ssh-tunnel targets
+
+targets:
+  # vLLM on the Spark ("qfn" = qwen3.8-flash-next). The metrics port is not
+  # published on the host, so we tunnel over ssh and scrape localhost there.
+  - name: sparky-vllm
+    kind: prometheus
+    url: http://127.0.0.1:8009/metrics
+    via_ssh: lenosparky       # ssh alias; `ssh -N -L <local>:127.0.0.1:8009 lenosparky`
+    labels: {host: sparky}
+
+  # Ollama on the Spark. NOTE: ollama 0.40.5 has no /metrics endpoint; it only
+  # answers /api/tags + /api/ps. Keep it as a liveness/models probe.
+  - name: sparky-ollama
+    kind: ollama
+    url: http://192.168.42.218:8003
+    labels: {host: sparky}
+
+  # OpenBrouter. It exposes no Prometheus endpoint, so we poll its JSON admin
+  # API (/health, /v1/stats, /v1/spend, /v1/models) and re-export gauges.
+  - name: openbrouter
+    kind: ob
+    url: https://ob.pourix.com:4000
+    api_key_env: OB_API_KEY   # exported in the systemd unit / shell env
+    insecure_tls: true        # ob serves a self-signed cert at port+1 style TLS
+    interval: 30s             # slower than the raw scrapes (it hits an API)
+
+  # Any other engine that grows a /metrics later (sglang, vllm, ...) just add:
+  # - name: sparky-sglang
+  #   kind: prometheus
+  #   url: http://192.168.42.218:8004/metrics

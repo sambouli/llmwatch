@@ -1,0 +1,4 @@
+llmwatch
+/config.yaml
+/llmwatch.env
+*.test

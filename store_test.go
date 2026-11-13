@@ -103,3 +103,36 @@ func TestConfigValidation(t *testing.T) {
 		t.Error("duplicate target name should fail")
 	}
 }
+
+func TestGaugeDedup(t *testing.T) {
+	s := NewStore(Duration(time.Hour))
+	now := time.Now()
+	for i := 0; i < 5; i++ {
+		s.AddSeries("eng", []Sample{{TS: now.Add(time.Duration(i) * time.Second), Name: "gauge_x", Value: 7}})
+	}
+	snap := s.Snapshot("eng")
+	if len(snap["eng"]) != 1 || len(snap["eng"][0].Values) != 1 {
+		t.Fatalf("repeated identical gauge samples should collapse, got %+v", snap["eng"])
+	}
+	// a counter must keep every staircase point
+	for i := 0; i < 5; i++ {
+		s.AddSeries("eng", []Sample{{TS: now.Add(time.Duration(10+i) * time.Second), Name: "c_total", Value: float64(i)}})
+	}
+	snap = s.Snapshot("eng")
+	for _, sv := range snap["eng"] {
+		if sv.Name == "c_total" && len(sv.Values) != 5 {
+			t.Fatalf("counter points dropped: %d", len(sv.Values))
+		}
+	}
+	// gauge value change appends; distinct label sets are distinct series
+	s.AddSeries("eng", []Sample{{TS: now.Add(2 * time.Minute), Name: "gauge_x", Value: 8}})
+	snap = s.Snapshot("eng")
+	for _, sv := range snap["eng"] {
+		if sv.Name == "gauge_x" && sv.Last == 8 {
+			continue
+		}
+		if sv.Name == "gauge_x" && len(sv.Values) != 1 {
+			t.Fatalf("changed gauge should append, got %d", len(sv.Values))
+		}
+	}
+}

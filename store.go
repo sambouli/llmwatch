@@ -82,6 +82,17 @@ func (s *Store) AddSeries(target string, samples []Sample) {
 		key := seriesKey(target, sm.Name, sm.Labels)
 		seen[key] = true
 		arr := s.series[key]
+		// Gauges are instantaneous observations: re-reporting the same value
+		// every scrape adds no information and would grow unbounded over a
+		// long retention window. Counters (_total/_count/_sum/quantiles) are
+		// always kept — their per-second rate needs the full staircase.
+		if len(arr) > 0 && !isCounter(sm.Name) && arr[len(arr)-1].Value == sm.Value {
+			// Refresh the timestamp: the series is still alive, it just
+			// hasn't moved. The dashboard shows "last seen", not "last change".
+			arr[len(arr)-1].TS = sm.TS
+			arr[len(arr)-1].Labels = sm.Labels
+			continue
+		}
 		// Append if newer than the tail; drop expired head.
 		if len(arr) > 0 && !sm.TS.After(arr[len(arr)-1].TS) {
 			continue

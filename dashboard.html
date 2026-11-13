@@ -132,6 +132,8 @@ function drawChart(cv, seriesList, fmt){
   const padY=(hi-lo)*0.08; lo-=padY; hi+=padY;
   const X=ts=>padL+(ts-t0)/rangeMs*(W-padL-padR);
   const Y=v=>H-padB-(v-lo)/(hi-lo)*(H-padT-padB);
+  // remember the mapping so the crosshair overlay can invert it
+  cv._plot = {t0, lo, hi, padL, padR, padT, padB, W, H};
 
   // grid + axes
   ctx.strokeStyle='#21262d'; ctx.fillStyle='#8b949e';
@@ -175,6 +177,66 @@ function drawChart(cv, seriesList, fmt){
   });
 }
 
+/* ---------- crosshair: project X (time) and Y (value) under the pointer ---------- */
+// The base chart is cached as an image right after drawing; the hover layer
+// composites it + crosshair, so moving the mouse never re-parses data.
+function attachCrosshair(cv, seriesList, fmt){
+  const ctx = cv.getContext('2d');
+  const cache = document.createElement('canvas');
+  cache.width = cv.width; cache.height = cv.height;
+  cache.getContext('2d').drawImage(cv,0,0);
+
+  function overlay(ev){
+    const p = cv._plot; if (!p) return;
+    const rect = cv.getBoundingClientRect();
+    const dpr = devicePixelRatio||1;
+    const mx = (ev.clientX-rect.left)*dpr, my=(ev.clientY-rect.top)*dpr;
+    ctx.clearRect(0,0,cv.width,cv.height);
+    ctx.drawImage(cache,0,0);
+    if (mx<p.padL || mx>p.W-p.padR || my<p.padT || my>p.H-p.padB) return;
+    const ts = p.t0 + (mx-p.padL)/(p.W-p.padL-p.padR)*rangeMs;
+    const val = p.lo + (p.H-p.padB-my)/(p.H-p.padT-p.padB)*(p.hi-p.lo);
+    // crosshair lines
+    ctx.strokeStyle='rgba(139,148,158,.6)'; ctx.lineWidth=1; ctx.setLineDash([3*dpr,3*dpr]);
+    ctx.beginPath(); ctx.moveTo(mx,p.padT); ctx.lineTo(mx,p.H-p.padB); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(p.padL,my); ctx.lineTo(p.W-p.padR,my); ctx.stroke();
+    ctx.setLineDash([]);
+    // marker dots on each visible series at the hovered time
+    ctx.font=(10*dpr)+'px monospace';
+    const rows=[];
+    for (const s of seriesList){
+      if (s.hidden || !s.ts.length) continue;
+      let best=-1, bd=Infinity;
+      for (let i=0;i<s.ts.length;i++){
+        const dd=Math.abs(s.ts[i]-ts); if (dd<bd){bd=dd;best=i;}
+      }
+      if (best<0 || bd > rangeMs*0.05) continue;   // nearest point must be close-ish
+      const col=PALETTE[(s.ci!==undefined?s.ci:0)%PALETTE.length];
+      const y=p.H-p.padB-(s.values[best]-p.lo)/(p.hi-p.lo)*(p.H-p.padT-p.padB);
+      ctx.fillStyle=col; ctx.beginPath(); ctx.arc(mx,y,3*dpr,0,7); ctx.fill();
+      rows.push({label:s.label, value:fmt(s.values[best]), col});
+    }
+    // readout box: time + per-series values
+    const timeStr=new Date(ts).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+    const lines=[timeStr, ...rows.map(r=>r.label+'  '+r.value)];
+    const lh=12*dpr, bw=Math.max(...lines.map(t=>ctx.measureText(t).width))+12*dpr, bh=lines.length*lh+8*dpr;
+    let bx=mx+10*dpr, by=my+10*dpr;
+    if (bx+bw>p.W-4) bx=mx-bw-10*dpr;
+    if (by+bh>p.H-4) by=my-bh-10*dpr;
+    ctx.fillStyle='rgba(22,27,34,.92)'; ctx.strokeStyle='#30363d';
+    ctx.fillRect(bx,by,bw,bh); ctx.strokeRect(bx,by,bw,bh);
+    ctx.textAlign='left'; ctx.textBaseline='top';
+    lines.forEach((t,i)=>{
+      ctx.fillStyle = i===0 ? '#8b949e' : rows[i-1].col;
+      ctx.fillText(t, bx+6*dpr, by+4*dpr+i*lh);
+    });
+  }
+  cv.addEventListener('mousemove', overlay);
+  cv.addEventListener('mouseleave', ()=>{
+    ctx.clearRect(0,0,cv.width,cv.height); ctx.drawImage(cache,0,0);
+  });
+}
+
 /* ---------- grouping: one card per (target, metric), all tag values overlaid ---------- */
 function baseName(name){ return name.replace(/\{quantile=[^}]*\}$/,''); }
 function groupSeries(target, arr){
@@ -203,6 +265,31 @@ function colorSlot(k){
 }
 let lastState=null;
 
+// Scroll preservation: the 5 s refresh rebuilds the grid, and reloads land at
+// the top. Remember where we were by anchoring to the card under the viewport
+// top (cards shift as data changes, absolute px drifts), plus the filter and
+// range so a manual F5 restores everything via sessionStorage.
+function captureAnchor(){
+  const cards=[...document.querySelectorAll('#cards .card')];
+  let anchorIdx=-1, frac=0;
+  for (let i=0;i<cards.length;i++){
+    const r=cards[i].getBoundingClientRect();
+    if (r.bottom > 60){ anchorIdx=i; frac=(r.top-60)/Math.max(r.height,1); break; }
+  }
+  return {anchorIdx, frac, y:window.scrollY,
+          filter:document.getElementById('filter').value, rangeMs};
+}
+function restoreScroll(a){
+  const cards=[...document.querySelectorAll('#cards .card')];
+  let y=a.y;
+  if (a.anchorIdx>=0 && a.anchorIdx<cards.length){
+    // align the anchored card's top with the viewport top (60px header offset)
+    const r=cards[a.anchorIdx].getBoundingClientRect();
+    y=window.scrollY + r.top - 60;
+  }
+  window.scrollTo(0, Math.max(0,y));
+}
+
 async function tick(){
   try {
     const r = await fetch('/api/state',{cache:'no-store'});
@@ -218,6 +305,7 @@ async function tick(){
 
 function render(){
   if (!lastState) return;
+  const anchor=captureAnchor();
   const data=lastState;
   const tEl=document.getElementById('targets');
   tEl.innerHTML='';
@@ -256,6 +344,7 @@ function render(){
         hidden: hidden.has(key+'\u0000'+labels[i]),
       }));
       drawChart(cv,drawn,fmt);
+      attachCrosshair(cv,drawn,fmt);
       list.forEach((s,i)=>{
         const li=document.createElement('span');
         li.className='li'+(drawn[i].hidden?' off':'');
@@ -267,6 +356,7 @@ function render(){
     }
   }
   if (!shown) cEl.innerHTML='<div class="empty">no series match</div>';
+  restoreScroll(anchor);
 }
 
 function esc(s){ return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
@@ -284,6 +374,30 @@ for (const [lbl,ms] of RANGES){
 
 document.getElementById('filter').addEventListener('input', render);
 window.addEventListener('resize', ()=>render());
+
+// persist view state across manual reloads (F5): scroll, filter, range
+const VS_KEY='llmwatch.viewstate';
+try {
+  const saved=JSON.parse(sessionStorage.getItem(VS_KEY)||'null');
+  if (saved){
+    if (typeof saved.filter==='string') document.getElementById('filter').value=saved.filter;
+    if (typeof saved.rangeMs==='number'){
+      rangeMs=saved.rangeMs;
+      RANGES.forEach(([lbl,ms],i)=>{
+        const b=rangesEl.children[i]; if(!b) return;
+        b.classList.toggle('cur', ms===rangeMs);
+      });
+    }
+    window._vsAnchor={anchorIdx:saved.anchorIdx??-1, frac:saved.frac??0, y:saved.y??0};
+  }
+} catch(e){ /* corrupt state, ignore */ }
+setInterval(()=>{ try{ sessionStorage.setItem(VS_KEY, JSON.stringify(captureAnchor())); }catch(e){} }, 2000);
+if (window._vsAnchor){
+  // after first data render, jump to the saved anchor once
+  const origRender=render;
+  render=function(){ origRender();
+    if (window._vsAnchor){ const a=window._vsAnchor; window._vsAnchor=null; restoreScroll(a); } };
+}
 tick();
 setInterval(tick, REFRESH_MS);
 </script>

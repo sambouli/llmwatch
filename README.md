@@ -46,9 +46,12 @@ systemctl --user enable --now llmwatch.service   # unit in deploy/
 
 ## Design notes
 
-- **In-memory only.** Retention-bounded ring per series (default 24 h), hard
-  cap per series; counters are stored raw and rates computed at read time.
-  Restarting loses history — that is the deal for "tiny".
+- **In-memory read path, SQLite write-behind journal.** The dashboard reads a
+  retention-bounded ring (default 24 h); every scrape is also appended to a
+  single-file SQLite journal (`db:`) so restarts replay history instead of
+  wiping it. WAL mode, one writer goroutine, minute prune of expired rows;
+  if the journal can't open we degrade to memory-only rather than die.
+  Counters are stored raw and rates computed at read time.
 - **SSH tunnels are managed internally**: one `ssh -N -L …` per
   (host, remote port), started lazily, respawned if it dies. No sshfs, no
   hand-opened tunnels.

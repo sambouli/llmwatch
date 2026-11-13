@@ -76,6 +76,19 @@ func seriesKey(target, name string, labels map[string]string) string {
 func (s *Store) AddSeries(target string, samples []Sample) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.addSeriesLocked(target, samples, false)
+}
+
+// LoadHistorical replays persisted samples at startup. Unlike a live scrape
+// it must NOT drop series that the replay hasn't reached yet — those are
+// still alive and will be re-reported by the first scrape.
+func (s *Store) LoadHistorical(target string, samples []Sample) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.addSeriesLocked(target, samples, true)
+}
+
+func (s *Store) addSeriesLocked(target string, samples []Sample, loading bool) {
 	cutoff := time.Now().Add(-s.retention)
 	seen := map[string]bool{}
 	for _, sm := range samples {
@@ -107,11 +120,14 @@ func (s *Store) AddSeries(target string, samples []Sample) {
 		s.series[key] = arr
 	}
 	// Drop series that vanished from the last scrape (engine restarted with a
-	// different label set) so stale lines don't haunt the dashboard.
-	prefix := target + "|"
-	for k := range s.series {
-		if strings.HasPrefix(k, prefix) && !seen[k] {
-			delete(s.series, k)
+	// different label set) so stale lines don't haunt the dashboard. During a
+	// startup replay this would delete everything not yet replayed, so skip.
+	if !loading {
+		prefix := target + "|"
+		for k := range s.series {
+			if strings.HasPrefix(k, prefix) && !seen[k] {
+				delete(s.series, k)
+			}
 		}
 	}
 }

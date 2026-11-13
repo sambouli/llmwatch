@@ -43,6 +43,7 @@ type Config struct {
 	ScrapeInterval Duration `yaml:"scrape_interval"`
 	Retention      Duration `yaml:"retention"`
 	SSHKey         string   `yaml:"ssh_key"`
+	DB             string   `yaml:"db"` // SQLite journal path ("" = llmwatch.db)
 	Targets        []Target `yaml:"targets"`
 }
 
@@ -112,6 +113,12 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if len(cfg.Targets) == 0 {
 		return nil, fmt.Errorf("no targets configured")
+	}
+	if cfg.DB == "" {
+		cfg.DB = "llmwatch.db"
+	}
+	if home := os.Getenv("HOME"); home != "" && strings.HasPrefix(cfg.DB, "~") {
+		cfg.DB = strings.Replace(cfg.DB, "~", home, 1)
 	}
 	return cfg, nil
 }

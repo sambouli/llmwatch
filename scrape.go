@@ -27,6 +27,7 @@ import (
 type Scheduler struct {
 	cfg     *Config
 	store   *Store
+	persist *Persister // nil = no disk journal
 	client  *http.Client
 	tunnels map[string]*tunnel // ssh host+port -> tunnel
 	stop    chan struct{}
@@ -42,6 +43,9 @@ func NewScheduler(cfg *Config, store *Store) *Scheduler {
 		stop:    make(chan struct{}),
 	}
 }
+
+// SetPersister wires the disk journal (call before Start).
+func (s *Scheduler) SetPersister(p *Persister) { s.persist = p }
 
 func newHTTPClient() *http.Client {
 	return &http.Client{
@@ -96,17 +100,7 @@ func (s *Scheduler) loop(t Target) {
 func (s *Scheduler) scrape(t Target) {
 	started := time.Now()
 	st := &TargetState{Name: t.Name, Kind: t.Kind, URL: t.URL, Labels: t.Labels, ScrapedAt: started}
-	var samples []Sample
-	var err error
-
-	switch t.Kind {
-	case KindPrometheus:
-		samples, err = s.scrapePrometheus(t, st)
-	case KindOllama:
-		samples, err = s.scrapeOllama(t, st)
-	case KindOB:
-		samples, err = s.scrapeOB(t, st)
-	}
+	samples, err := s.poll(t, st)
 
 	st.DurationMs = time.Since(started).Milliseconds()
 	st.Series = len(samples)
@@ -117,8 +111,25 @@ func (s *Scheduler) scrape(t Target) {
 	} else {
 		st.Up = true
 		s.store.AddSeries(t.Name, samples)
+		if s.persist != nil {
+			s.persist.Enqueue(t.Name, samples)
+		}
 	}
 	s.store.SetState(st)
+}
+
+// poll dispatches to the kind-specific collector. Split out of scrape so
+// tests can drive it with an httptest server.
+func (s *Scheduler) poll(t Target, st *TargetState) ([]Sample, error) {
+	switch t.Kind {
+	case KindPrometheus:
+		return s.scrapePrometheus(t, st)
+	case KindOllama:
+		return s.scrapeOllama(t, st)
+	case KindOB:
+		return s.scrapeOB(t, st)
+	}
+	return nil, fmt.Errorf("unknown kind %q", t.Kind)
 }
 
 // ---------- prometheus ----------

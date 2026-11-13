@@ -4,7 +4,8 @@
 
 listen: 0.0.0.0:8799          # dashboard + /metrics served here
 scrape_interval: 15s          # poll cadence for every target
-retention: 24h                # how far back the in-memory ring keeps samples
+retention: 24h                # how far back samples are kept (memory + journal)
+db: llmwatch.db                   # SQLite write-behind journal; history survives restarts
 ssh_key: ~/.ssh/lenosparky    # default key for ssh-tunnel targets
 
 targets:

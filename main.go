@@ -23,7 +23,24 @@ func main() {
 	}
 
 	store := NewStore(cfg.Retention)
+
+	// Disk journal: replay history into memory, then keep writing through.
+	// A broken journal must never stop monitoring — degrade to memory-only.
+	var persister *Persister
+	if p, err := OpenPersister(cfg.DB, cfg.Retention.Duration()); err != nil {
+		log.Printf("llmwatch: persistence disabled (%v)", err)
+	} else {
+		persister = p
+		defer p.Close()
+		if n, err := p.Load(store, cfg.Retention.Duration()); err != nil {
+			log.Printf("llmwatch: journal replay partial (%v), %d samples loaded", err, n)
+		} else {
+			log.Printf("llmwatch: replayed %d samples from %s", n, cfg.DB)
+		}
+	}
+
 	scheduler := NewScheduler(cfg, store)
+	scheduler.SetPersister(persister)
 	scheduler.Start()
 
 	mux := http.NewServeMux()
